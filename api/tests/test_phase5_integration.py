@@ -312,6 +312,30 @@ def test_scheduler_jobs_endpoint(client: TestClient):
     assert isinstance(data, list)
 
 
+def test_scheduled_reminders_empty_without_supabase(client: TestClient):
+    """Scheduled reminders endpoint returns empty list without Supabase."""
+    res = client.get("/ai/scheduled-reminders")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["reminders"] == []
+    assert data["total"] == 0
+
+
+def test_cancel_reminder_simulated_without_supabase(client: TestClient):
+    """Cancel reminder returns simulated response without Supabase."""
+    res = client.post(
+        "/ai/cancel-reminder",
+        json={"reminder_id": "test-123", "reason": "Test cancel"},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "cancelled"
+    assert data["reminder_id"] == "test-123"
+    assert "session" in data.get("reason", "")
+
+
+
+
 def test_scheduler_pause_resume_endpoints(client: TestClient):
     """Scheduler pause/resume endpoints work."""
     # First create a job via the scheduler engine
@@ -327,9 +351,14 @@ def test_scheduler_pause_resume_endpoints(client: TestClient):
 
 
 def test_automation_status_endpoint(client: TestClient):
-    """Automation status endpoint returns status (503 without Supabase)."""
+    """Automation status endpoint returns status."""
     res = client.get("/ai/automation-status")
-    assert res.status_code == 503
+    assert res.status_code == 200
+    data = res.json()
+    assert data["storage_backend"] == "session"
+    assert data["total_scheduled_reminders"] == 0
+    assert data["pending_reminders"] == 0
+    assert data["sent_reminders"] == 0
 
 
 def test_audit_log_endpoint(client: TestClient):

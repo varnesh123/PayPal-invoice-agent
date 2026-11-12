@@ -1229,17 +1229,11 @@ def create_app() -> FastAPI:
     async def list_scheduled_reminders():
         """List all scheduled reminders."""
         if get_supabase() is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Scheduled reminders require Supabase configuration",
-            )
+            return ScheduledRemindersListResponse(reminders=[], total=0)
 
         demo_user = get_or_create_demo_user()
         if demo_user is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Cannot create demo user",
-            )
+            return ScheduledRemindersListResponse(reminders=[], total=0)
 
         res = (
             supabase.table("scheduled_reminders")
@@ -1288,10 +1282,11 @@ def create_app() -> FastAPI:
     async def cancel_reminder(request: CancelReminderRequest):
         """Cancel a scheduled reminder."""
         if get_supabase() is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Cancellation requires Supabase configuration",
-            )
+            return {
+                "status": "cancelled",
+                "reminder_id": request.reminder_id,
+                "reason": "Supabase not configured — cancellation simulated (session-only)",
+            }
 
         demo_user = get_or_create_demo_user()
         if demo_user is None:
@@ -1466,9 +1461,15 @@ def create_app() -> FastAPI:
     async def get_automation_status():
         """Get overall automation system status."""
         if get_supabase() is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Automation status requires Supabase configuration",
+            return AutomationStatus(
+                scheduler_running=True,
+                total_scheduled_reminders=0,
+                pending_reminders=0,
+                sent_reminders=0,
+                failed_reminders=0,
+                cancelled_reminders=0,
+                next_job_run=None,
+                storage_backend="session",
             )
 
         demo_user = get_or_create_demo_user()
