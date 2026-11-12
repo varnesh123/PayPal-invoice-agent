@@ -222,6 +222,8 @@ export default function AIIntelligence() {
   const [composerInvoiceId, setComposerInvoiceId] = useState<string | null>(null);
   const [composerTone, setComposerTone] = useState<string>("polite");
   const [composerContext, setComposerContext] = useState<string>("");
+  const [editedReminderSubject, setEditedReminderSubject] = useState<string>("");
+  const [editedReminderBody, setEditedReminderBody] = useState<string>("");
   const [reminderDraft, setReminderDraft] = useState<ReminderDraftResponse | null>(null);
   const [composerStatus, setComposerStatus] = useState<
     "idle" | "generating" | "success" | "error"
@@ -327,10 +329,68 @@ export default function AIIntelligence() {
       };
       const draft = await generateReminder(request);
       setReminderDraft(draft);
+      setEditedReminderSubject(draft.subject);
+      setEditedReminderBody(draft.body);
       setComposerStatus("success");
     } catch (err) {
       setComposerStatus("error");
       setError(err instanceof Error ? err.message : "Failed to generate reminder draft");
+    }
+  };
+
+  const handleApproveDraft = async () => {
+    if (!reminderDraft?.recommendation_id) return;
+    try {
+      const request: ApprovalRequest = {
+        recommendation_id: reminderDraft.recommendation_id,
+        action: "approve",
+        edited_content: {
+          subject: editedReminderSubject,
+          body: editedReminderBody,
+        },
+        editor_note: "Approved via AI Insights dashboard",
+      };
+      const result = await processApproval(request);
+      setApprovals((prev) =>
+        prev.map((r) =>
+          r.id === result.recommendation_id
+            ? { ...r, status: result.status, decided_at: result.decided_at }
+            : r
+        )
+      );
+      setReminderDraft(null);
+      setEditedReminderSubject("");
+      setEditedReminderBody("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Approval failed");
+    }
+  };
+
+  const handleRejectDraft = async () => {
+    if (!reminderDraft?.recommendation_id) return;
+    try {
+      const request: ApprovalRequest = {
+        recommendation_id: reminderDraft.recommendation_id,
+        action: "reject",
+        edited_content: {
+          subject: editedReminderSubject,
+          body: editedReminderBody,
+        },
+        editor_note: "Rejected via AI Insights dashboard",
+      };
+      const result = await processApproval(request);
+      setApprovals((prev) =>
+        prev.map((r) =>
+          r.id === result.recommendation_id
+            ? { ...r, status: result.status, decided_at: result.decided_at }
+            : r
+        )
+      );
+      setReminderDraft(null);
+      setEditedReminderSubject("");
+      setEditedReminderBody("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Rejection failed");
     }
   };
 
@@ -340,6 +400,10 @@ export default function AIIntelligence() {
       const request: ApprovalRequest = {
         recommendation_id: record.recommendation_id,
         action: "approve",
+        edited_content: {
+          subject: editedReminderSubject,
+          body: editedReminderBody,
+        },
         editor_note: "",
       };
       const result = await processApproval(request);
@@ -361,6 +425,10 @@ export default function AIIntelligence() {
       const request: ApprovalRequest = {
         recommendation_id: record.recommendation_id,
         action: "reject",
+        edited_content: {
+          subject: editedReminderSubject,
+          body: editedReminderBody,
+        },
         editor_note: "",
       };
       const result = await processApproval(request);
@@ -647,18 +715,62 @@ export default function AIIntelligence() {
                     </div>
                   </div>
                   {reminderDraft && (
-                    <div className="space-y-3">
+                    <div className="space-y-4">
                       <div className="flex items-center justify-between">
                         <h3 className="text-xs font-bold text-zinc-900 uppercase tracking-wider">Generated Reminder Draft</h3>
                         <span className="px-2 py-1 rounded text-xs font-bold" style={{ backgroundColor: reminderDraft.method === "ai" ? "#f0fdf4" : "#fffbeb", color: reminderDraft.method === "ai" ? "#15803d" : "#92400e" }}>
                           {reminderDraft.method === "ai" ? "AI-generated" : "Template-based"}
                         </span>
                       </div>
-                      <div className="bg-zinc-900 rounded-lg p-4 font-mono text-sm text-zinc-300 overflow-x-auto">
-                        <div className="font-bold text-zinc-200 mb-2">{reminderDraft.subject}</div>
-                        <div className="whitespace-pre-wrap">{reminderDraft.body}</div>
+                      {/* Editable subject */}
+                      <div>
+                        <label className="text-xs font-bold text-zinc-900 uppercase tracking-wider mb-1 block">Subject</label>
+                        <input
+                          value={editedReminderSubject}
+                          onChange={(e) => setEditedReminderSubject(e.target.value)}
+                          className="w-full px-3 py-2 rounded-lg border border-zinc-300 bg-white text-sm font-medium focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                          placeholder="Reminder subject"
+                        />
+                      </div>
+                      {/* Editable body */}
+                      <div>
+                        <label className="text-xs font-bold text-zinc-900 uppercase tracking-wider mb-1 block">Message Body</label>
+                        <textarea
+                          value={editedReminderBody}
+                          onChange={(e) => setEditedReminderBody(e.target.value)}
+                          rows={8}
+                          className="w-full px-3 py-2 rounded-lg border border-zinc-300 bg-white font-mono text-sm focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                          placeholder="Reminder body text"
+                        />
+                      </div>
+                      <div className="flex gap-3">
+                        <button
+                          onClick={handleApproveDraft}
+                          disabled={!reminderDraft.recommendation_id}
+                          className={`flex-1 px-4 py-2.5 rounded-lg font-medium transition-colors ${
+                            !reminderDraft.recommendation_id
+                              ? "bg-zinc-200 text-zinc-400 cursor-not-allowed"
+                              : "bg-green-600 text-white hover:bg-green-700"
+                          }`}
+                        >
+                          {reminderDraft.recommendation_id ? "✅ Approve Draft" : "Supabase required"}
+                        </button>
+                        <button
+                          onClick={handleRejectDraft}
+                          disabled={!reminderDraft.recommendation_id}
+                          className={`flex-1 px-4 py-2.5 rounded-lg font-medium transition-colors ${
+                            !reminderDraft.recommendation_id
+                              ? "bg-zinc-200 text-zinc-400 cursor-not-allowed"
+                              : "bg-red-600 text-white hover:bg-red-700"
+                          }`}
+                        >
+                          ❌ Reject Draft
+                        </button>
                       </div>
                       <p className="text-xs text-zinc-500">{reminderDraft.requires_approval ? "⚠️ This draft requires human approval before sending. No emails are sent automatically." : "Draft ready for review."}</p>
+                      {reminderDraft.recommendation_id && (
+                        <p className="text-xs text-zinc-400 font-mono">Recommendation ID: {reminderDraft.recommendation_id}</p>
+                      )}
                     </div>
                   )}
                 </div>
@@ -691,13 +803,14 @@ export default function AIIntelligence() {
                     <th className="px-4 py-3 text-xs font-semibold text-zinc-500 w-24">Status</th>
                     <th className="px-4 py-3 text-xs font-semibold text-zinc-500">Decided At</th>
                     <th className="px-4 py-3 text-xs font-semibold text-zinc-500">Editor Note</th>
+                    <th className="px-4 py-3 text-xs font-semibold text-zinc-500 w-24">Storage</th>
                     <th className="px-4 py-3 text-xs font-semibold text-zinc-500 w-40">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-100">
                   {pendingApprovals.length === 0 && approvals.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-4 py-12 text-center text-zinc-500">
+                      <td colSpan={7} className="px-4 py-12 text-center text-zinc-500">
                         No approval records yet. Generate a reminder draft to begin the approval workflow.
                       </td>
                     </tr>
@@ -711,6 +824,9 @@ export default function AIIntelligence() {
                         <td className="px-4 py-3"><span className={`px-2 py-1 rounded text-xs font-bold ${a.status === "approved" ? "bg-green-100 text-green-800" : a.status === "rejected" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"}`}>{a.status}</span></td>
                         <td className="px-4 py-3 text-sm text-zinc-600">{a.decided_at ? formatDate(a.decided_at) : "—"}</td>
                         <td className="px-4 py-3 text-sm text-zinc-600">{a.editor_note || "—"}</td>
+                        <td className="px-4 py-3 text-xs font-medium text-zinc-600">
+                          {a.storage_backend === "database" ? "🗄️ DB" : "💾 Session"}
+                        </td>
                         <td className="px-4 py-3">
                           {a.status === "pending" ? (
                             <div className="flex gap-2">

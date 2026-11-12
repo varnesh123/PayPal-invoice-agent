@@ -17,6 +17,7 @@ Endpoints:
 """
 
 import base64
+import hashlib
 import logging
 import time
 import zlib
@@ -41,6 +42,9 @@ from app.db import (
     create_ai_recommendation,
     create_approval_record,
     get_approval_records,
+    record_payment_event,
+    get_customer_payment_history,
+    get_payment_events_for_invoice,
 )
 from app.schemas import HealthResponse
 from app.paypal import get_provider as get_paypal_provider
@@ -67,6 +71,9 @@ from app.ai.schemas import (
     ApprovalRequest,
     ApprovalResponse,
     ApprovalsListResponse,
+    PaymentEventRecord,
+    RecordPaymentEventRequest,
+    PaymentHistoryResponse,
 )
 from app.ai.provider import AIProviderError as AIProviderError
 from app.ai.rules import (
@@ -76,6 +83,20 @@ from app.ai.rules import (
     calculate_days_overdue,
 )
 from app.ai.schemas import PaymentBehaviourInsight
+from app.ai.scheduling_schemas import (
+    ScheduledReminderCreate,
+    ScheduledReminderResponse,
+    ScheduledRemindersListResponse,
+    ScheduleReminderRequest,
+    CancelReminderRequest,
+    SchedulerJobResponse,
+    ExecutionResult,
+    AutomationStatus,
+)
+from app.email import get_email_provider
+from app.execution import execution_engine
+from app.scheduler import scheduler_engine
+from app.audit import audit_logger
 
 logger = logging.getLogger(__name__)
 
@@ -850,7 +871,9 @@ def create_app() -> FastAPI:
             )
 
         # Persist to Supabase if configured
+        storage_backend = "session"
         if get_supabase() is not None:
+            storage_backend = "database"
             approved = result.status in ("approved", "edited")
             create_approval_record(
                 ai_recommendation_id=request.recommendation_id,
@@ -859,7 +882,14 @@ def create_app() -> FastAPI:
                 editor_note=request.editor_note,
             )
 
-        return result
+        return ApprovalResponse(
+            recommendation_id=result.recommendation_id,
+            action=result.action,
+            status=result.status,
+            decided_at=result.decided_at,
+            editor_note=result.editor_note,
+            storage_backend=storage_backend,
+        )
 
     @app.get(
         "/ai/approvals",
@@ -881,13 +911,127 @@ def create_app() -> FastAPI:
                     status="approved" if r.get("approved") else "rejected",
                     decided_at=r.get("decided_at"),
                     editor_note=r.get("editor_note"),
+                    storage_backend="database",
                 )
                 for r in records
             ]
             return ApprovalsListResponse(records=summaries, total=len(summaries))
 
-        # Fall back to in-memory provider store
+        # Fall back to in-memory provider store (session-only)
         return await provider.list_approvals()
+
+    @app.post(
+        "/ai/payment-history",
+        response_model=PaymentEventRecord,
+        tags=["ai"],
+    )
+    async def record_customer_payment_event(request: RecordPaymentEventRequest):
+        """Record a genuine customer payment event.
+
+        Only payment events (e.g., invoice marked PAID) should be recorded.
+        Reminder activity, AI analysis, and approval actions are NOT payment
+        events and must not be recorded here.
+        """
+        result = record_payment_event(
+            customer_email=request.customer_email,
+            customer_name=request.customer_name,
+            invoice_id=request.invoice_id,
+            paypal_invoice_id=request.paypal_invoice_id,
+            payment_amount_cents=request.payment_amount_cents,
+            payment_currency=request.payment_currency,
+            payment_date=request.payment_date,
+            payment_method=request.payment_method,
+            notes=request.notes,
+        )
+        if result is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Payment history recording requires Supabase configuration",
+            )
+        return PaymentEventRecord(
+            id=result["id"],
+            customer_email=result["customer_email"],
+            customer_name=result.get("customer_name"),
+            invoice_id=result.get("invoice_id"),
+            paypal_invoice_id=result.get("paypal_invoice_id"),
+            payment_amount_cents=result["payment_amount_cents"],
+            payment_currency=result["payment_currency"],
+            payment_date=result["payment_date"],
+            payment_method=result.get("payment_method"),
+            notes=result.get("notes"),
+        )
+
+    @app.get(
+        "/ai/payment-history/{customer_email}",
+        response_model=PaymentHistoryResponse,
+        tags=["ai"],
+    )
+    async def get_customer_payment_history_endpoint(customer_email: str):
+        """Return payment history for a customer (most recent first).
+
+        Only genuine payment events are returned. No payment behavior is
+        inferred from reminder activity or AI analysis.
+        """
+        events = get_customer_payment_history(customer_email)
+        if events is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Payment history requires Supabase configuration",
+            )
+        return PaymentHistoryResponse(
+            customer_email=customer_email,
+            events=[
+                PaymentEventRecord(
+                    id=e["id"],
+                    customer_email=e["customer_email"],
+                    customer_name=e.get("customer_name"),
+                    invoice_id=e.get("invoice_id"),
+                    paypal_invoice_id=e.get("paypal_invoice_id"),
+                    payment_amount_cents=e["payment_amount_cents"],
+                    payment_currency=e["payment_currency"],
+                    payment_date=e["payment_date"],
+                    payment_method=e.get("payment_method"),
+                    notes=e.get("notes"),
+                )
+                for e in events
+            ],
+            total=len(events),
+        )
+
+    @app.get(
+        "/ai/payment-history/invoice/{invoice_id}",
+        response_model=PaymentHistoryResponse,
+        tags=["ai"],
+    )
+    async def get_invoice_payment_events(invoice_id: str):
+        """Return all payment events for a specific invoice."""
+        events = get_payment_events_for_invoice(invoice_id)
+        if events is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Payment history requires Supabase configuration",
+            )
+        # Use the first event's customer email, or empty string if none
+        customer_email = events[0]["customer_email"] if events else ""
+        return PaymentHistoryResponse(
+            customer_email=customer_email,
+            events=[
+                PaymentEventRecord(
+                    id=e["id"],
+                    customer_email=e["customer_email"],
+                    customer_name=e.get("customer_name"),
+                    invoice_id=e.get("invoice_id"),
+                    paypal_invoice_id=e.get("paypal_invoice_id"),
+                    payment_amount_cents=e["payment_amount_cents"],
+                    payment_currency=e["payment_currency"],
+                    payment_date=e["payment_date"],
+                    payment_method=e.get("payment_method"),
+                    notes=e.get("notes"),
+                )
+                for e in events
+            ],
+            total=len(events),
+        )
 
     @app.get(
         "/ai/health",
@@ -897,7 +1041,574 @@ def create_app() -> FastAPI:
     async def ai_health():
         """AI service health status."""
         provider = get_ai_provider()
+        health = await provider.health()
+        storage_backend = "database" if get_supabase() is not None else "session"
+        return AIHealthResponse(
+            ai_mode=health.ai_mode,
+            configured=health.configured,
+            provider=health.provider,
+            available=health.available,
+            storage_backend=storage_backend,
+        )
+
+    # ========================================================================
+    # SCHEDULED REMINDERS (Phase 5)
+    # ========================================================================
+    @app.post(
+        "/ai/schedule-reminder",
+        response_model=ScheduledReminderResponse,
+        tags=["scheduler"],
+    )
+    async def schedule_reminder(request: ScheduleReminderRequest):
+        """Schedule an approved reminder for future execution.
+
+        Only approved reminders (with recommendation_id) can be scheduled.
+        Requires Supabase for persistence.
+        """
+        if get_supabase() is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Scheduling requires Supabase configuration",
+            )
+
+        demo_user = get_or_create_demo_user()
+        if demo_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Cannot create demo user",
+            )
+
+        # Verify the recommendation exists and is approved
+        res = (
+            supabase.table("approval_records")
+            .select("*")
+            .eq("ai_recommendation_id", request.recommendation_id)
+            .eq("user_id", demo_user["id"])
+            .eq("approved", True)
+            .limit(1)
+            .execute()
+        )
+        if not res.data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Recommendation not found or not approved",
+            )
+
+        approval = res.data[0]
+
+        # Get the recommendation to retrieve the draft content
+        rec_res = (
+            supabase.table("ai_recommendations")
+            .select("*")
+            .eq("id", request.recommendation_id)
+            .limit(1)
+            .execute()
+        )
+        if not rec_res.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Recommendation not found",
+            )
+
+        rec = rec_res.data[0]
+        content = rec.get("content", {})
+        subject = content.get("subject", "Payment Reminder")
+        body = content.get("body", "")
+
+        # Get invoice details
+        invoice_id = rec.get("invoice_id")
+        paypal_invoice_id = ""
+        customer_email = ""
+        customer_name = None
+        if invoice_id:
+            inv_res = (
+                supabase.table("invoices")
+                .select("*")
+                .eq("id", invoice_id)
+                .limit(1)
+                .execute()
+            )
+            if inv_res.data:
+                inv = inv_res.data[0]
+                paypal_invoice_id = inv.get("paypal_invoice_id", "")
+                customer_email = inv.get("customer_email", "")
+
+        # Create idempotency key
+        idempotency_key = f"remind-{request.recommendation_id}-{hashlib.sha256(request.recommendation_id.encode()).hexdigest()[:12]}"
+
+        # Insert scheduled reminder
+        insert_res = (
+            supabase.table("scheduled_reminders")
+            .insert(
+                {
+                    "user_id": demo_user["id"],
+                    "ai_recommendation_id": request.recommendation_id,
+                    "invoice_id": invoice_id,
+                    "paypal_invoice_id": paypal_invoice_id,
+                    "customer_email": customer_email,
+                    "customer_name": customer_name,
+                    "subject": subject,
+                    "body": body,
+                    "tone": request.tone,
+                    "channel": request.channel,
+                    "status": "scheduled",
+                    "scheduled_for": request.scheduled_for.isoformat()
+                    if hasattr(request.scheduled_for, "isoformat")
+                    else str(request.scheduled_for),
+                    "idempotency_key": idempotency_key,
+                    "delivery_attempts": 0,
+                    "max_attempts": 3,
+                }
+            )
+            .execute()
+        )
+
+        if not insert_res.data:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to schedule reminder",
+            )
+
+        reminder = insert_res.data[0]
+
+        # Create scheduler job if not exists
+        scheduler_engine.create_job(
+            job_name="reminder_due_check",
+            job_type="reminder_due_check",
+            interval_seconds=scheduler_interval_seconds,
+            user_id=demo_user["id"],
+        )
+
+        # Audit log
+        audit_logger.log(
+            event_type="reminder_scheduled",
+            event_category="reminder",
+            resource_type="scheduled_reminder",
+            resource_id=reminder["id"],
+            actor="user",
+            details={
+                "invoice_id": invoice_id,
+                "customer_email": customer_email,
+                "scheduled_for": request.scheduled_for.isoformat()
+                if hasattr(request.scheduled_for, "isoformat")
+                else str(request.scheduled_for),
+                "channel": request.channel,
+            },
+            user_id=demo_user["id"],
+        )
+
+        return ScheduledReminderResponse(
+            id=reminder["id"],
+            user_id=reminder["user_id"],
+            ai_recommendation_id=reminder.get("ai_recommendation_id"),
+            invoice_id=reminder.get("invoice_id"),
+            paypal_invoice_id=reminder["paypal_invoice_id"],
+            customer_email=reminder["customer_email"],
+            customer_name=reminder.get("customer_name"),
+            subject=reminder["subject"],
+            body=reminder["body"],
+            tone=reminder["tone"],
+            channel=reminder["channel"],
+            status=reminder["status"],
+            scheduled_for=reminder["scheduled_for"],
+            sent_at=reminder.get("sent_at"),
+            executed_at=reminder.get("executed_at"),
+            idempotency_key=reminder["idempotency_key"],
+            delivery_attempts=reminder["delivery_attempts"],
+            max_attempts=reminder["max_attempts"],
+            last_error=reminder.get("last_error"),
+            created_at=reminder["created_at"],
+            updated_at=reminder["updated_at"],
+        )
+
+    @app.get(
+        "/ai/scheduled-reminders",
+        response_model=ScheduledRemindersListResponse,
+        tags=["scheduler"],
+    )
+    async def list_scheduled_reminders():
+        """List all scheduled reminders."""
+        if get_supabase() is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Scheduled reminders require Supabase configuration",
+            )
+
+        demo_user = get_or_create_demo_user()
+        if demo_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Cannot create demo user",
+            )
+
+        res = (
+            supabase.table("scheduled_reminders")
+            .select("*")
+            .eq("user_id", demo_user["id"])
+            .order("created_at", desc=True)
+            .execute()
+        )
+
+        reminders = []
+        for r in res.data or []:
+            reminders.append(
+                ScheduledReminderResponse(
+                    id=r["id"],
+                    user_id=r["user_id"],
+                    ai_recommendation_id=r.get("ai_recommendation_id"),
+                    invoice_id=r.get("invoice_id"),
+                    paypal_invoice_id=r["paypal_invoice_id"],
+                    customer_email=r["customer_email"],
+                    customer_name=r.get("customer_name"),
+                    subject=r["subject"],
+                    body=r["body"],
+                    tone=r["tone"],
+                    channel=r["channel"],
+                    status=r["status"],
+                    scheduled_for=r["scheduled_for"],
+                    sent_at=r.get("sent_at"),
+                    executed_at=r.get("executed_at"),
+                    idempotency_key=r["idempotency_key"],
+                    delivery_attempts=r["delivery_attempts"],
+                    max_attempts=r["max_attempts"],
+                    last_error=r.get("last_error"),
+                    created_at=r["created_at"],
+                    updated_at=r["updated_at"],
+                    amount=r.get("amount_cents", 0) / 100 if r.get("amount_cents") else None,
+                    currency=r.get("currency", "USD"),
+                )
+            )
+
+        return ScheduledRemindersListResponse(reminders=reminders, total=len(reminders))
+
+    @app.post(
+        "/ai/cancel-reminder",
+        tags=["scheduler"],
+    )
+    async def cancel_reminder(request: CancelReminderRequest):
+        """Cancel a scheduled reminder."""
+        if get_supabase() is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Cancellation requires Supabase configuration",
+            )
+
+        demo_user = get_or_create_demo_user()
+        if demo_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Cannot create demo user",
+            )
+
+        res = (
+            supabase.table("scheduled_reminders")
+            .update(
+                {
+                    "status": "cancelled",
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            .eq("id", request.reminder_id)
+            .eq("user_id", demo_user["id"])
+            .execute()
+        )
+
+        if not res.data:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Reminder not found",
+            )
+
+        # Audit log
+        audit_logger.log(
+            event_type="reminder_cancelled",
+            event_category="reminder",
+            resource_type="scheduled_reminder",
+            resource_id=request.reminder_id,
+            actor="user",
+            details={"reason": request.reason},
+            user_id=demo_user["id"],
+        )
+
+        return {"status": "cancelled", "reminder_id": request.reminder_id}
+
+    # ========================================================================
+    # SCHEDULER JOBS (Phase 5)
+    # ========================================================================
+    @app.get(
+        "/ai/scheduler/jobs",
+        response_model=List[SchedulerJobResponse],
+        tags=["scheduler"],
+    )
+    async def list_scheduler_jobs():
+        """List all scheduler jobs."""
+        jobs = scheduler_engine.get_jobs()
+        return [
+            SchedulerJobResponse(
+                id=j["id"],
+                job_name=j["job_name"],
+                job_type=j["job_type"],
+                status=j["status"],
+                last_run_at=j.get("last_run_at"),
+                next_run_at=j.get("next_run_at"),
+                interval_seconds=j["interval_seconds"],
+                run_count=j["run_count"],
+                failure_count=j["failure_count"],
+                last_error=j.get("last_error"),
+                created_at=j["created_at"],
+                updated_at=j["updated_at"],
+            )
+            for j in jobs
+        ]
+
+    @app.post(
+        "/ai/scheduler/pause",
+        tags=["scheduler"],
+    )
+    async def pause_scheduler():
+        """Pause the reminder scheduler job."""
+        jobs = scheduler_engine.get_jobs()
+        for job in jobs:
+            if job["job_type"] == "reminder_due_check":
+                scheduler_engine.pause_job(job["id"])
+        return {"status": "paused"}
+
+    @app.post(
+        "/ai/scheduler/resume",
+        tags=["scheduler"],
+    )
+    async def resume_scheduler():
+        """Resume the reminder scheduler job."""
+        jobs = scheduler_engine.get_jobs()
+        for job in jobs:
+            if job["job_type"] == "reminder_due_check":
+                scheduler_engine.resume_job(job["id"])
+        return {"status": "resumed"}
+
+    @app.post(
+        "/ai/scheduler/disable",
+        tags=["scheduler"],
+    )
+    async def disable_scheduler():
+        """Disable the reminder scheduler job."""
+        jobs = scheduler_engine.get_jobs()
+        for job in jobs:
+            if job["job_type"] == "reminder_due_check":
+                scheduler_engine.disable_job(job["id"])
+        return {"status": "disabled"}
+
+    @app.post(
+        "/ai/scheduler/process",
+        tags=["scheduler"],
+    )
+    async def process_due_reminders():
+        """Process all due scheduled reminders with smart follow-up logic.
+
+        Checks each scheduled reminder for eligibility:
+        - Invoice must not be PAID or CANCELLED
+        - Reminder must not exceed max_attempts
+        - Reminder must be in 'scheduled' status
+        - Idempotency is enforced
+
+        Returns a summary of processed reminders.
+        """
+        result = scheduler_engine.process_due_reminders()
+        return result
+
+    # ========================================================================
+    # EMAIL PROVIDER (Phase 5)
+    # ========================================================================
+    @app.get(
+        "/ai/email/health",
+        tags=["email"],
+    )
+    async def email_health():
+        """Email provider health status."""
+        provider = get_email_provider()
         return await provider.health()
+
+    @app.post(
+        "/ai/email/test",
+        tags=["email"],
+    )
+    async def send_test_email(to_email: str):
+        """Send a test email to verify configuration."""
+        provider = get_email_provider()
+        result = await provider.send_test_email(to_email)
+        return result
+
+    # ========================================================================
+    # AUDIT LOG (Phase 5)
+    # ========================================================================
+    @app.get(
+        "/ai/audit-log",
+        tags=["audit"],
+    )
+    async def get_audit_log(
+        limit: int = 100,
+        event_type: Optional[str] = None,
+        event_category: Optional[str] = None,
+    ):
+        """List audit log events (most recent first)."""
+        events = audit_logger.get_events(
+            limit=limit, event_type=event_type, event_category=event_category
+        )
+        return {"events": events, "total": len(events)}
+
+    # ========================================================================
+    # AUTOMATION STATUS (Phase 5)
+    # ========================================================================
+    @app.get(
+        "/ai/automation-status",
+        response_model=AutomationStatus,
+        tags=["automation"],
+    )
+    async def get_automation_status():
+        """Get overall automation system status."""
+        if get_supabase() is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Automation status requires Supabase configuration",
+            )
+
+        demo_user = get_or_create_demo_user()
+        if demo_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Cannot create demo user",
+            )
+
+        # Get reminder counts
+        res = (
+            supabase.table("scheduled_reminders")
+            .select("status")
+            .eq("user_id", demo_user["id"])
+            .execute()
+        )
+        reminders = res.data or []
+        total = len(reminders)
+        pending = sum(1 for r in reminders if r["status"] == "scheduled")
+        sent = sum(1 for r in reminders if r["status"] == "sent")
+        failed = sum(1 for r in reminders if r["status"] == "failed")
+        cancelled = sum(1 for r in reminders if r["status"] == "cancelled")
+
+        # Get next job run
+        jobs = scheduler_engine.get_jobs()
+        next_run = None
+        for job in jobs:
+            if job["status"] == "active" and job.get("next_run_at"):
+                nr = job["next_run_at"]
+                if next_run is None or nr < next_run:
+                    next_run = nr
+
+        return AutomationStatus(
+            scheduler_running=True,
+            total_scheduled_reminders=total,
+            pending_reminders=pending,
+            sent_reminders=sent,
+            failed_reminders=failed,
+            cancelled_reminders=cancelled,
+            next_job_run=next_run,
+            storage_backend="database",
+        )
+
+    # ========================================================================
+    # PAYPAL INVOICE STATUS SYNCHRONIZATION (Phase 5)
+    # ========================================================================
+    @app.post(
+        "/paypal/sync-invoice-status",
+        tags=["paypal"],
+    )
+    async def sync_invoice_status():
+        """Sync invoice status from PayPal Invoicing API v2.
+
+        In mock mode: returns mock status changes without contacting PayPal.
+        In sandbox mode: fetches real invoices from PayPal and updates local status.
+
+        Never claims real PayPal synchronization occurred in mock mode.
+        """
+        if settings.paypal_mode == "mock":
+            # Mock mode: simulate status sync without contacting PayPal
+            audit_logger.log(
+                event_type="invoice_status_synced",
+                event_category="invoice",
+                resource_type="invoice",
+                resource_id="mock",
+                actor="system",
+                details={"mode": "mock", "note": "Simulated sync - no real PayPal API call"},
+                user_id="demo-user",
+            )
+            return {
+                "status": "synced",
+                "mode": "mock",
+                "message": "Mock mode: no real PayPal API call made",
+                "invoices_checked": 0,
+                "invoices_updated": 0,
+            }
+
+        # Sandbox mode: real PayPal API call
+        provider = get_paypal_provider()
+        if not provider.is_configured():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="PayPal client credentials not configured",
+            )
+
+        try:
+            data = await provider.list_invoices(page=1, page_size=1000)
+        except PayPalProviderError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=str(exc),
+            )
+
+        raw_invoices = data.get("items", []) or []
+        updated_count = 0
+
+        if get_supabase() is not None:
+            demo_user = get_or_create_demo_user()
+            if demo_user:
+                user_id = demo_user["id"]
+                for inv in raw_invoices:
+                    paypal_id = inv.get("id", "")
+                    status = inv.get("status", "")
+
+                    # Update local invoice status
+                    upd_res = (
+                        supabase.table("invoices")
+                        .update(
+                            {
+                                "status": status,
+                                "updated_at": datetime.now(timezone.utc).isoformat(),
+                            }
+                        )
+                        .eq("user_id", user_id)
+                        .eq("paypal_invoice_id", paypal_id)
+                        .execute()
+                    )
+                    if upd_res.data:
+                        updated_count += 1
+
+                        # Audit log
+                        audit_logger.log(
+                            event_type="invoice_status_changed",
+                            event_category="invoice",
+                            resource_type="invoice",
+                            resource_id=paypal_id,
+                            actor="system",
+                            details={
+                                "new_status": status,
+                                "source": "paypal_sandbox",
+                            },
+                            user_id=user_id,
+                        )
+
+        return {
+            "status": "synced",
+            "mode": "sandbox",
+            "invoices_checked": len(raw_invoices),
+            "invoices_updated": updated_count,
+        }
 
     return app
 

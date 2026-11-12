@@ -475,3 +475,90 @@ def test_mock_mode_no_credentials_required(client: TestClient):
     inv_id = list_res.json()["invoices"][0]["paypal_invoice_id"]
     res = client.post("/ai/analyze", json={"invoice_id": inv_id})
     assert res.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 repair tests: storage_backend, edited_content, payment history
+# ---------------------------------------------------------------------------
+
+def test_ai_health_storage_backend_session(client: TestClient):
+    """Health endpoint reports storage_backend='session' when no Supabase."""
+    res = client.get("/ai/health")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["storage_backend"] == "session"
+
+
+def test_ai_approval_storage_backend_session(client: TestClient):
+    """Approval response reports storage_backend='session' when no Supabase."""
+    res = client.post(
+        "/ai/approval",
+        json={
+            "recommendation_id": "repair-test-1",
+            "action": "approve",
+            "editor_note": "Session-only test",
+        },
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["storage_backend"] == "session"
+
+
+def test_ai_approval_edited_content_preserved(client: TestClient):
+    """Edited content is stored and returned in approval response."""
+    edited_body = {
+        "subject": "Edited subject line",
+        "body": "This is the edited reminder body text.",
+    }
+    res = client.post(
+        "/ai/approval",
+        json={
+            "recommendation_id": "repair-test-2",
+            "action": "edit",
+            "edited_content": edited_body,
+            "editor_note": "Toned down the language",
+        },
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "edited"
+    assert data["editor_note"] == "Toned down the language"
+
+
+def test_ai_approvals_include_storage_backend(client: TestClient):
+    """Approval list includes storage_backend field for each record."""
+    client.post(
+        "/ai/approval",
+        json={"recommendation_id": "repair-test-3", "action": "reject"},
+    )
+    res = client.get("/ai/approvals")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["total"] >= 1
+    for record in data["records"]:
+        assert "storage_backend" in record
+        assert record["storage_backend"] == "session"
+
+
+def test_payment_history_recording_requires_supabase(client: TestClient):
+    """Payment history recording returns 503 without Supabase configured."""
+    res = client.post(
+        "/ai/payment-history",
+        json={
+            "customer_email": "test@example.com",
+            "payment_amount_cents": 5000,
+        },
+    )
+    assert res.status_code == 503
+
+
+def test_payment_history_retrieval_requires_supabase(client: TestClient):
+    """Payment history retrieval returns 503 without Supabase configured."""
+    res = client.get("/ai/payment-history/test@example.com")
+    assert res.status_code == 503
+
+
+def test_payment_history_invoice_endpoint_requires_supabase(client: TestClient):
+    """Invoice payment history endpoint returns 503 without Supabase."""
+    res = client.get("/ai/payment-history/invoice/INV2-TEST-0001")
+    assert res.status_code == 503

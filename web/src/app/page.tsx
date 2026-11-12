@@ -56,6 +56,9 @@ export default function Home() {
         <a href="/ai-insights" className="text-sm text-zinc-600 hover:text-zinc-900">
           AI Intelligence
         </a>
+        <a href="/automation" className="text-sm text-zinc-600 hover:text-zinc-900">
+          Automation
+        </a>
       </nav>
 
       <main className="max-w-3xl mx-auto px-6 py-8 space-y-6">

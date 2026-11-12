@@ -186,6 +186,10 @@ class ApprovalResponse(BaseModel):
     status: str  # "approved" | "rejected" | "edited"
     decided_at: datetime
     editor_note: Optional[str] = None
+    storage_backend: str = Field(
+        ...,
+        description="'database' if persisted to Supabase, 'session' if in-memory only",
+    )
 
 
 class ApprovalRecordSummary(BaseModel):
@@ -196,6 +200,10 @@ class ApprovalRecordSummary(BaseModel):
     status: str
     decided_at: Optional[datetime] = None
     editor_note: Optional[str] = None
+    storage_backend: str = Field(
+        ...,
+        description="'database' if persisted to Supabase, 'session' if in-memory only",
+    )
 
 
 class ApprovalsListResponse(BaseModel):
@@ -214,3 +222,45 @@ class AIHealthResponse(BaseModel):
     configured: bool
     provider: str
     available: bool
+    storage_backend: str = Field(
+        ...,
+        description="'database' if Supabase is configured, 'session' if in-memory only",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Customer payment history
+# ---------------------------------------------------------------------------
+
+class PaymentEventRecord(BaseModel):
+    """A genuine customer payment event."""
+    id: str
+    customer_email: str
+    customer_name: Optional[str] = None
+    invoice_id: Optional[str] = None
+    paypal_invoice_id: Optional[str] = None
+    payment_amount_cents: int
+    payment_currency: str = "USD"
+    payment_date: str
+    payment_method: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class RecordPaymentEventRequest(BaseModel):
+    """Request to record a genuine payment event."""
+    customer_email: str
+    customer_name: Optional[str] = None
+    invoice_id: Optional[str] = None
+    paypal_invoice_id: Optional[str] = None
+    payment_amount_cents: int
+    payment_currency: str = "USD"
+    payment_date: Optional[str] = None
+    payment_method: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class PaymentHistoryResponse(BaseModel):
+    """Payment history for a customer."""
+    customer_email: str
+    events: List[PaymentEventRecord]
+    total: int

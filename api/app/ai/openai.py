@@ -94,6 +94,7 @@ class OpenAIProvider(AIProvider):
             configured=self.is_configured(),
             provider="openai",
             available=self.is_configured(),
+            storage_backend="session",
         )
 
     # ------------------------------------------------------------------

@@ -24,6 +24,9 @@ from app.ai.schemas import (
     PriorityScoreResponse,
     ReminderDraftRequest,
     ReminderDraftResponse,
+    PaymentEventRecord,
+    RecordPaymentEventRequest,
+    PaymentHistoryResponse,
 )
 
 __all__ = [
@@ -43,4 +46,7 @@ __all__ = [
     "PriorityScoreResponse",
     "ReminderDraftRequest",
     "ReminderDraftResponse",
+    "PaymentEventRecord",
+    "RecordPaymentEventRequest",
+    "PaymentHistoryResponse",
 ]

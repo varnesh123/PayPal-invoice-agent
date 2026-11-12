@@ -9,7 +9,7 @@ payment information — it states when data is unavailable.
 """
 
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from app.ai.provider import AIProvider, AIProviderError
@@ -60,6 +60,7 @@ class MockAIProvider(AIProvider):
             configured=True,
             provider="mock",
             available=True,
+            storage_backend="session",
         )
 
     # ------------------------------------------------------------------
@@ -267,8 +268,9 @@ class MockAIProvider(AIProvider):
     ) -> ApprovalResponse:
         """Process an approve/reject/edit action on an AI recommendation.
 
-        Records the decision in-memory. In production, this is persisted
-        to Supabase via the backend route helpers.
+        Records the decision in-memory (session-only storage). In production
+        with Supabase configured, the backend route also persists to the
+        database via create_approval_record().
         """
         self._recommendation_counter += 1
         rec_id = request.recommendation_id or f"rec-{self._recommendation_counter:06d}"
@@ -287,9 +289,10 @@ class MockAIProvider(AIProvider):
             "recommendation_id": rec_id,
             "action": request.action,
             "status": status,
-            "decided_at": datetime.utcnow(),
+            "decided_at": datetime.now(timezone.utc),
             "editor_note": request.editor_note,
             "edited_content": request.edited_content,
+            "storage_backend": "session",
         }
         self._approvals[rec_id] = record
 
@@ -299,10 +302,15 @@ class MockAIProvider(AIProvider):
             status=status,
             decided_at=record["decided_at"],
             editor_note=request.editor_note,
+            storage_backend="session",
         )
 
     async def list_approvals(self) -> ApprovalsListResponse:
-        """List all approval records (most recent first)."""
+        """List all approval records (most recent first).
+
+        These are session-only (in-memory) records. When Supabase is
+        configured, the backend route reads from the database instead.
+        """
         records = sorted(
             self._approvals.values(),
             key=lambda r: r.get("decided_at") or datetime.min,
@@ -316,6 +324,7 @@ class MockAIProvider(AIProvider):
                 status=r["status"],
                 decided_at=r.get("decided_at"),
                 editor_note=r.get("editor_note"),
+                storage_backend=r.get("storage_backend", "session"),
             )
             for r in records
         ]

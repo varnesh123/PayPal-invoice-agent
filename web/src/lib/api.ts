@@ -117,6 +117,7 @@ export interface ReminderDraftResponse {
   body: string;
   method: string;
   requires_approval: boolean;
+  recommendation_id?: string;
 }
 
 export interface PaymentBehaviourInsight {
@@ -153,6 +154,7 @@ export interface ApprovalResponse {
   status: string;
   decided_at: string;
   editor_note: string | null;
+  storage_backend: string;
 }
 
 export interface ApprovalRecordSummary {
@@ -162,6 +164,7 @@ export interface ApprovalRecordSummary {
   status: string;
   decided_at: string | null;
   editor_note: string | null;
+  storage_backend: string;
 }
 
 export interface ApprovalsListResponse {
@@ -310,4 +313,190 @@ export async function processApproval(
 /** List approval history (most recent first). */
 export async function getApprovals(): Promise<ApprovalsListResponse> {
   return request<ApprovalsListResponse>("/ai/approvals");
+}
+
+// --- Phase 5: Scheduling & Automation types ---
+
+export interface ScheduledReminderResponse {
+  id: string;
+  user_id: string;
+  ai_recommendation_id: string | null;
+  invoice_id: string | null;
+  paypal_invoice_id: string;
+  customer_email: string;
+  customer_name: string | null;
+  subject: string;
+  body: string;
+  tone: string;
+  channel: string;
+  status: string;
+  scheduled_for: string;
+  sent_at: string | null;
+  executed_at: string | null;
+  idempotency_key: string;
+  delivery_attempts: number;
+  max_attempts: number;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+  amount: number | null;
+  currency: string | null;
+}
+
+export interface ScheduledRemindersListResponse {
+  reminders: ScheduledReminderResponse[];
+  total: number;
+}
+
+export interface ScheduleReminderRequest {
+  recommendation_id: string;
+  scheduled_for: string;
+  tone: string;
+  channel: string;
+}
+
+export interface CancelReminderRequest {
+  reminder_id: string;
+  reason: string | null;
+}
+
+export interface SchedulerJobResponse {
+  id: string;
+  job_name: string;
+  job_type: string;
+  status: string;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  interval_seconds: number;
+  run_count: number;
+  failure_count: number;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AutomationStatus {
+  scheduler_running: boolean;
+  total_scheduled_reminders: number;
+  pending_reminders: number;
+  sent_reminders: number;
+  failed_reminders: number;
+  cancelled_reminders: number;
+  next_job_run: string | null;
+  storage_backend: string;
+}
+
+export interface AuditEvent {
+  id: string;
+  user_id: string | null;
+  event_type: string;
+  event_category: string;
+  resource_type: string | null;
+  resource_id: string | null;
+  actor: string;
+  details: any;
+  ip_address: string | null;
+  created_at: string;
+}
+
+export interface AuditLogResponse {
+  events: AuditEvent[];
+  total: number;
+}
+
+// --- Phase 5: Scheduling & Automation API client ---
+
+/** Schedule a reminder from an approved draft. */
+export async function scheduleReminder(
+  body: ScheduleReminderRequest
+): Promise<ScheduledReminderResponse> {
+  return request<ScheduledReminderResponse>("/ai/schedule-reminder", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** List all scheduled reminders. */
+export async function getScheduledReminders(): Promise<ScheduledRemindersListResponse> {
+  return request<ScheduledRemindersListResponse>("/ai/scheduled-reminders");
+}
+
+/** Cancel a scheduled reminder. */
+export async function cancelReminder(
+  body: CancelReminderRequest
+): Promise<{ status: string; reminder_id: string }> {
+  return request<{ status: string; reminder_id: string }>("/ai/cancel-reminder", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
+
+/** List all scheduler jobs. */
+export async function getSchedulerJobs(): Promise<SchedulerJobResponse[]> {
+  return request<SchedulerJobResponse[]>("/ai/scheduler/jobs");
+}
+
+/** Pause the scheduler. */
+export async function pauseScheduler(): Promise<{ status: string }> {
+  return request<{ status: string }>("/ai/scheduler/pause", {
+    method: "POST",
+  });
+}
+
+/** Resume the scheduler. */
+export async function resumeScheduler(): Promise<{ status: string }> {
+  return request<{ status: string }>("/ai/scheduler/resume", {
+    method: "POST",
+  });
+}
+
+/** Disable the scheduler. */
+export async function disableScheduler(): Promise<{ status: string }> {
+  return request<{ status: string }>("/ai/scheduler/disable", {
+    method: "POST",
+  });
+}
+
+/** Process due reminders (smart follow-up). */
+export async function processDueReminders(): Promise<any> {
+  return request<any>("/ai/scheduler/process", {
+    method: "POST",
+  });
+}
+
+/** Email provider health. */
+export async function getEmailHealth(): Promise<any> {
+  return request<any>("/ai/email/health");
+}
+
+/** Send a test email. */
+export async function sendTestEmail(toEmail: string): Promise<any> {
+  return request<any>("/ai/email/test", {
+    method: "POST",
+    body: JSON.stringify({ to_email: toEmail }),
+  });
+}
+
+/** Get audit log events. */
+export async function getAuditLog(
+  limit?: number,
+  eventType?: string | null,
+  eventCategory?: string | null
+): Promise<AuditLogResponse> {
+  const url = `/ai/audit-log?limit=${limit ?? 100}${
+    eventType ? `&event_type=${encodeURIComponent(eventType)}` : ""
+  }${eventCategory ? `&event_category=${encodeURIComponent(eventCategory)}` : ""}`;
+  return request<AuditLogResponse>(url);
+}
+
+/** Get automation status. */
+export async function getAutomationStatus(): Promise<AutomationStatus> {
+  return request<AutomationStatus>("/ai/automation-status");
+}
+
+/** Sync invoice status from PayPal. */
+export async function syncInvoiceStatus(): Promise<any> {
+  return request<any>("/paypal/sync-invoice-status", {
+    method: "POST",
+  });
 }

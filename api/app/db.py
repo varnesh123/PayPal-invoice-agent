@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     # --- Demo user email (used when seeding mock data without auth) ------
     demo_user_email: str = "demo@invoice-collection-agent.example"
 
+    # --- Scheduler settings (Phase 5) -------------------------------------
+    scheduler_interval_seconds: int = 300  # 5 minutes default
+    scheduler_job_type: str = "reminder_due_check"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
@@ -415,6 +419,116 @@ def get_approval_records(limit: int = 50) -> Optional[List[Dict[str, Any]]]:
         .eq("user_id", demo_user["id"])
         .order("decided_at", desc=True)
         .limit(limit)
+        .execute()
+    )
+    return res.data or []
+
+
+# ---------------------------------------------------------------------------
+# Customer payment history helpers (Phase 4)
+# Only genuine invoice payment events are recorded here.
+# Reminder activity, AI analysis, approval actions, and other
+# application events are NOT recorded here.
+
+def record_payment_event(
+    customer_email: str,
+    payment_amount_cents: int,
+    payment_currency: str = "USD",
+    invoice_id: Optional[str] = None,
+    paypal_invoice_id: Optional[str] = None,
+    payment_date: Optional[str] = None,
+    payment_method: Optional[str] = None,
+    notes: Optional[str] = None,
+    customer_name: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Record a genuine customer payment event.
+
+    Only payment events (invoice marked PAID) should be recorded here.
+    Reminder activity, AI analysis, and approval actions are NOT payment
+    events and must not be recorded in this table.
+
+    Returns the created row, or None if Supabase is not configured.
+    """
+    supabase = get_supabase()
+    if supabase is None:
+        return None
+
+    demo_user = get_or_create_demo_user()
+    if demo_user is None:
+        return None
+
+    from datetime import datetime, timezone
+
+    res = (
+        supabase.table("customer_payment_history")
+        .insert(
+            {
+                "user_id": demo_user["id"],
+                "customer_email": customer_email,
+                "customer_name": customer_name,
+                "invoice_id": invoice_id,
+                "paypal_invoice_id": paypal_invoice_id,
+                "payment_amount_cents": payment_amount_cents,
+                "payment_currency": payment_currency,
+                "payment_date": payment_date or datetime.now(timezone.utc).isoformat(),
+                "payment_method": payment_method,
+                "notes": notes,
+            }
+        )
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def get_customer_payment_history(
+    customer_email: str, limit: int = 50
+) -> Optional[List[Dict[str, Any]]]:
+    """Return payment history for a customer (most recent first).
+
+    Only genuine payment events are returned. Returns None if Supabase
+    is not configured.
+    """
+    supabase = get_supabase()
+    if supabase is None:
+        return None
+
+    demo_user = get_or_create_demo_user()
+    if demo_user is None:
+        return []
+
+    res = (
+        supabase.table("customer_payment_history")
+        .select("*")
+        .eq("user_id", demo_user["id"])
+        .eq("customer_email", customer_email)
+        .order("payment_date", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return res.data or []
+
+
+def get_payment_events_for_invoice(
+    invoice_id: str,
+) -> Optional[List[Dict[str, Any]]]:
+    """Return all payment events for a specific invoice.
+
+    Returns None if Supabase is not configured.
+    """
+    supabase = get_supabase()
+    if supabase is None:
+        return None
+
+    demo_user = get_or_create_demo_user()
+    if demo_user is None:
+        return []
+
+    res = (
+        supabase.table("customer_payment_history")
+        .select("*")
+        .eq("user_id", demo_user["id"])
+        .eq("invoice_id", invoice_id)
+        .order("payment_date", desc=True)
         .execute()
     )
     return res.data or []
