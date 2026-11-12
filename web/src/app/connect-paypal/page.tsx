@@ -10,7 +10,7 @@ export default function ConnectPayPal() {
 
   useEffect(() => {
     // Fetch health to determine if we're in mock/demo mode
-    fetch("http://localhost:8000/health")
+    fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000"}/health`)
       .then((res) => res.json())
       .then((data: any) => {
         setDemoMode(data.paypal_mode === "mock");

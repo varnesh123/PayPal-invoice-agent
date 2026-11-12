@@ -17,7 +17,7 @@ export default function Home() {
 
   useEffect(() => {
     let mounted = true;
-    fetch("http://localhost:8000/health")
+    fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:8000"}/health`)
       .then((res) => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json() as Promise<HealthResponse>;
