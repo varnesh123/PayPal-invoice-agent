@@ -9,6 +9,8 @@ out/
 build/
 dist/
 
+api/.env
+
 # Python
 __pycache__/
 *.py[cod]
