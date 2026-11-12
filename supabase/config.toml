@@ -1,0 +1,41 @@
+# Supabase CLI configuration
+# https://supabase.com/docs/guides/cli/local-development#configuring-your-project
+
+[project]
+id = "local"
+name = "invoice-collection-agent"
+version = "0.1.0"
+
+[auth]
+enabled = false
+site_url = "http://localhost:3000"
+jwt_secret = "super-secret-jwt-secret-with-at-least-32-characters-long"
+enable_email_signup = false
+enable_email_autoconfirm = true
+
+[database]
+enabled = true
+port = 54322
+
+[api]
+enabled = true
+port = 54321
+rest_url = "http://localhost:54321/v1/"
+
+[realtime]
+enabled = false
+port = 54320
+
+[storage]
+enabled = false
+port = 54323
+
+[edge_runtime]
+enabled = false
+
+[oidc]
+enabled = false
+issuer = "http://localhost:54323"
+
+[analytics]
+enabled = false

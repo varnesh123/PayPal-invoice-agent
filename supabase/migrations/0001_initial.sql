@@ -7,6 +7,7 @@
 --
 -- NOTE: Do NOT apply until a Supabase project exists and DATABASE_URL is set.
 -- See .env.example for required variables.
+-- Do NOT run automatically — apply manually via Supabase SQL Editor or psql.
 
 -- Enable UUID extension
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -67,6 +68,35 @@ CREATE TABLE invoices (
 );
 
 -- ---------------------------------------------------------------------------
+-- ai_recommendations: agent draft recommendations
+-- (created before approval_records and reminder_history to satisfy FK order)
+-- ---------------------------------------------------------------------------
+CREATE TABLE ai_recommendations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    invoice_id UUID REFERENCES invoices(id) ON DELETE SET NULL,
+    customer_message_id UUID REFERENCES customer_messages(id) ON DELETE SET NULL,
+    type TEXT NOT NULL,
+    content JSONB,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- ---------------------------------------------------------------------------
+-- approval_records: human approval gate
+-- (created before reminder_history because reminder_history references it)
+-- ---------------------------------------------------------------------------
+CREATE TABLE approval_records (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    ai_recommendation_id UUID REFERENCES ai_recommendations(id) ON DELETE SET NULL,
+    action TEXT NOT NULL,
+    approved BOOLEAN NOT NULL,
+    decided_at TIMESTAMPTZ,
+    editor_note TEXT
+);
+
+-- ---------------------------------------------------------------------------
 -- invoice_activity: audit trail of status changes
 -- ---------------------------------------------------------------------------
 CREATE TABLE invoice_activity (
@@ -79,6 +109,7 @@ CREATE TABLE invoice_activity (
 
 -- ---------------------------------------------------------------------------
 -- reminder_history: record of each sent reminder
+-- (approval_records and invoices must exist before this table)
 -- ---------------------------------------------------------------------------
 CREATE TABLE reminder_history (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -104,20 +135,6 @@ CREATE TABLE customer_messages (
 );
 
 -- ---------------------------------------------------------------------------
--- ai_recommendations: agent draft recommendations
--- ---------------------------------------------------------------------------
-CREATE TABLE ai_recommendations (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    invoice_id UUID REFERENCES invoices(id) ON DELETE SET NULL,
-    customer_message_id UUID REFERENCES customer_messages(id) ON DELETE SET NULL,
-    type TEXT NOT NULL,
-    content JSONB,
-    status TEXT NOT NULL DEFAULT 'pending',
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- ---------------------------------------------------------------------------
 -- webhook_events: idempotency log for PayPal webhooks
 -- ---------------------------------------------------------------------------
 CREATE TABLE webhook_events (
@@ -126,19 +143,6 @@ CREATE TABLE webhook_events (
     event_type TEXT NOT NULL,
     received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     processed BOOLEAN NOT NULL DEFAULT FALSE
-);
-
--- ---------------------------------------------------------------------------
--- approval_records: human approval gate
--- ---------------------------------------------------------------------------
-CREATE TABLE approval_records (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    ai_recommendation_id UUID REFERENCES ai_recommendations(id) ON DELETE SET NULL,
-    action TEXT NOT NULL,
-    approved BOOLEAN NOT NULL,
-    decided_at TIMESTAMPTZ,
-    editor_note TEXT
 );
 
 -- ---------------------------------------------------------------------------

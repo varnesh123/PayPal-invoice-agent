@@ -14,6 +14,7 @@ class HealthResponse(BaseModel):
     service: str = "invoice-collection-agent"
     environment: str
     database_configured: bool
+    paypal_mode: str = "mock"
 
 
 class TokenResponse(BaseModel):
